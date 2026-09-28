@@ -1,2 +1,9 @@
 .DS_Store
 .claude/
+
+# Personal documents (this repo is public — never commit resumes/cover letters/PII)
+*Resume*
+*CoverLetter*
+*Cover_Letter*
+*.docx
+*.pdf
