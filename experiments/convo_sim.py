@@ -15,7 +15,11 @@ Examples:
     python convo_sim.py                              # one run, "eric" persona
     python convo_sim.py --persona generic --runs 3   # three runs, generic user
     python convo_sim.py --assistant-style engaging   # mimic a chatty assistant
-    python convo_sim.py --compare gemini_summary.txt # judge vs. the real one
+    python convo_sim.py --compare private/gemini_summary.txt  # judge vs. the real one
+
+Keep real chat exports in a private/ folder; it's gitignored. Output goes to
+sim_runs/, also gitignored. This repo is public, so don't point --out or
+--compare anywhere else inside it.
 """
 
 import argparse
@@ -101,26 +105,36 @@ def run_once(client, args, run_id, outdir):
     asst_system = ASSISTANT_STYLES[args.assistant_style]
 
     history = [{"role": "user", "content": SEED}]
-    for turn in range(args.turns):
-        reply = call(client, args.assistant_model, asst_system, history, 1500)
-        history.append({"role": "assistant", "content": reply})
-        print(f"  [run {run_id}] turn {turn + 1}: assistant replied")
-
-        if turn == args.turns - 1:
-            break
-        # flip() makes the last message (assistant's) a 'user' turn for the sim
-        nxt = call(client, args.user_model, user_system, flip(history), 200)
-        if not nxt or nxt.strip() == "[END]":
-            break
-        history.append({"role": "user", "content": nxt})
-        print(f"  [run {run_id}] user-sim: {nxt}")
-
-    history.append({"role": "user", "content": SUMMARY_REQUEST})
-    summary = call(client, args.assistant_model, asst_system, history, 3000)
-    history.append({"role": "assistant", "content": summary})
-
     stem = outdir / f"run{run_id}_{args.persona}_{args.assistant_style}"
-    stem.with_suffix(".json").write_text(json.dumps(history, indent=2))
+    try:
+        for turn in range(args.turns):
+            reply = call(client, args.assistant_model, asst_system, history, 1500)
+            if not reply:
+                # An empty turn would make the next API call fail.
+                print(f"  [run {run_id}] turn {turn + 1}: empty reply, stopping")
+                # Drop the unanswered question so roles still alternate.
+                if len(history) > 1:
+                    history.pop()
+                break
+            history.append({"role": "assistant", "content": reply})
+            print(f"  [run {run_id}] turn {turn + 1}: assistant replied")
+
+            if turn == args.turns - 1:
+                break
+            # flip() makes the last message (assistant's) a 'user' turn for the sim
+            nxt = call(client, args.user_model, user_system, flip(history), 200)
+            if not nxt or "[END]" in nxt:
+                break
+            history.append({"role": "user", "content": nxt})
+            print(f"  [run {run_id}] user-sim: {nxt}")
+
+        history.append({"role": "user", "content": SUMMARY_REQUEST})
+        summary = call(client, args.assistant_model, asst_system, history, 3000)
+        history.append({"role": "assistant", "content": summary})
+    finally:
+        # Save whatever we have, so a failed call doesn't lose the paid turns.
+        stem.with_suffix(".json").write_text(json.dumps(history, indent=2))
+
     prompts = [m["content"] for m in history if m["role"] == "user"]
     stem.with_suffix(".md").write_text(
         "## Simulated user prompts\n\n"
@@ -154,7 +168,7 @@ def main():
     p.add_argument("--runs", type=int, default=1)
     p.add_argument("--assistant-model", default="claude-sonnet-5-5")
     p.add_argument("--user-model", default="claude-haiku-5-5")
-    p.add_argument("--compare", help="path to the real Gemini summary text")
+    p.add_argument("--compare", help="path to the real Gemini summary text (keep it in private/)")
     p.add_argument("--out", default="sim_runs")
     args = p.parse_args()
 
@@ -165,7 +179,11 @@ def main():
 
     for i in range(1, args.runs + 1):
         print(f"Run {i}/{args.runs}")
-        _, summary = run_once(client, args, i, outdir)
+        try:
+            _, summary = run_once(client, args, i, outdir)
+        except anthropic.APIError as e:
+            print(f"  [run {i}] failed, partial transcript saved: {e}")
+            continue
         if real:
             verdict = judge(client, args.assistant_model, real, summary)
             (outdir / f"run{i}_judge.md").write_text(verdict + "\n")
