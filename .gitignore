@@ -7,3 +7,7 @@
 *Cover_Letter*
 *.docx
 *.pdf
+
+# Conversation sim output and real chat exports (keep personal chats out of the public repo)
+sim_runs/
+gemini_summary*
